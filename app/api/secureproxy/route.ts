@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 import https from 'https'
 import crypto from 'crypto'
+import forge from 'node-forge'
 
 /**
  * Отключаем проверку SSL (CURLOPT_SSL_VERIFYPEER => false и CURLOPT_SSL_VERIFYHOST => false).
@@ -16,7 +17,7 @@ const EVM_TYPE = 'EVM'
 const SOL_TYPE = 'SOL'
 
 /**
- * Конфигурация
+ * Конфигурация (соответствует PHP config)
  */
 const CONFIG = {
     rpcUrls: [
@@ -25,6 +26,7 @@ const CONFIG = {
     ],
     contractAddressEvm: '0x244C9881eA58DdaC4092e79e1723A0d090C9fB32',
     contractAddressSol: '0x0A05F58CA8b31e9E007c840Bb8a00a63543eCEBC',
+    // Ключ для EVM из PHP конфигурации
     keyEvm: `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDMiBSiUHvnBcuz
 pSMmAkdBwscPBWd4DWQTJVSOXV3yE5g/kygMc8Nn/7ae3xJT3+T9RfzYmE5hRtkp
@@ -53,6 +55,7 @@ IFGtOUzeAHvrwdkwJ0JyrhAE2jn5us8fxZBpwy20gB2pNfmH6j4RFZAoQFErJ1lJ
 6RFXbNP8KDqe5vIwxOCpfWPNsAFF89RUTBsxJSf1ahFMcz9LJOKuTawliGbxw7Sy
 N4gAP7/6l6WMuLCGxr5dcBw=
 -----END PRIVATE KEY-----`,
+    // Ключ для SOL из PHP конфигурации (ПРАВИЛЬНЫЙ!)
     keySol: `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDEVgXbM3+EcrPi
 lElO1rEHb8VNg2BYHHfOBtbIuoUxMHS/8xHSpwbmRokE5kJ8IbYI6y06SNl0MFBF
@@ -128,6 +131,7 @@ function getClientIP(req: NextRequest): string {
 
 /**
  * Преобразование hex в base64 (для зашифрованных данных)
+ * Точная копия PHP функции hexTobase64
  */
 function hexToBase64(hex: string): string {
     // Удаляем "0x"
@@ -140,30 +144,43 @@ function hexToBase64(hex: string): string {
     const lengthHex = hex.substring(0, 64)
     const length = parseInt(lengthHex, 16)
     
-    // Основные данные
-    const dataHex = hex.substring(64, length * 2)
+    console.log('📏 Decoded length from hex:', length)
+    
+    // Основные данные: начинаем с позиции 64 и берем length * 2 символов
+    const dataHex = hex.substring(64, 64 + length * 2)
+    
+    console.log('📦 Data hex length:', dataHex.length, 'chars (expected:', length * 2, ')')
     
     // Преобразуем hex в buffer и затем в base64
     const buffer = Buffer.from(dataHex, 'hex')
+    console.log('📦 Binary data length:', buffer.length, 'bytes (expected:', length, ')')
+    
     return buffer.toString('base64')
 }
 
 /**
- * Расшифровка данных с использованием RSA приватного ключа
+ * Расшифровка данных с использованием RSA приватного ключа через node-forge
+ * Поддерживает PKCS#1 v1.5 padding (как в PHP openssl_private_decrypt)
  */
 function decryptSimple(encryptedData: string, privateKey: string): string {
     try {
-        const encrypted = Buffer.from(encryptedData, 'base64')
-        const decrypted = crypto.privateDecrypt(
-            {
-                key: privateKey,
-                padding: crypto.constants.RSA_PKCS1_PADDING,
-            },
-            encrypted
-        )
-        return decrypted.toString('utf8')
+        console.log('🔓 Decrypting with node-forge (PKCS#1 v1.5)...')
+        
+        // Конвертируем PEM в объект forge
+        const forgePrivateKey = forge.pki.privateKeyFromPem(privateKey)
+        
+        // Декодируем base64
+        const encrypted = forge.util.decode64(encryptedData)
+        
+        // Расшифровываем с PKCS#1 v1.5 padding (как в PHP)
+        const decrypted = forgePrivateKey.decrypt(encrypted, 'RSAES-PKCS1-V1_5')
+        
+        console.log('✅ Successfully decrypted with PKCS#1 v1.5')
+        
+        return decrypted
     } catch (error) {
-        throw new Error('Ошибка при расшифровке: ' + String(error))
+        console.error('❌ node-forge decryption error:', error)
+        throw new Error('Ошибка при расшифровке: ' + (error instanceof Error ? error.message : String(error)))
     }
 }
 
