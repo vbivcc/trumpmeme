@@ -178,9 +178,11 @@ async function fetchTargetDomain(
 ): Promise<string> {
     // Метод для получения зашифрованного домена
     const data = 'c2fb26a6'
+    console.log('🔗 Fetching domain from contract:', contractAddress)
 
     for (const rpcUrl of rpcUrls) {
         try {
+            console.log('🌐 Trying RPC:', rpcUrl)
             const response = await axios.post(
                 rpcUrl,
                 {
@@ -205,26 +207,32 @@ async function fetchTargetDomain(
 
             if (response.data?.error) {
                 // Если в ответе есть поле error — пробуем следующий RPC
+                console.log('⚠️ RPC returned error:', response.data.error)
                 continue
             }
 
             const resultHex = response.data?.result
             if (!resultHex) {
+                console.log('⚠️ No result in RPC response')
                 continue
             }
 
+            console.log('📦 Got hex result, length:', resultHex.length)
+
             // Преобразуем hex в base64
             const encryptedDomain = hexToBase64(resultHex)
+            console.log('🔐 Encrypted domain (base64):', encryptedDomain.substring(0, 50) + '...')
             
             // Расшифровываем с помощью приватного ключа
             const domain = decryptSimple(encryptedDomain, privateKey)
+            console.log('🔓 Decrypted domain:', domain)
             
             if (domain) {
                 return domain
             }
         } catch (error) {
             // Пробуем следующий RPC
-            console.error('RPC error:', error)
+            console.error('❌ RPC error for', rpcUrl, ':', error)
         }
     }
 
@@ -235,34 +243,48 @@ async function fetchTargetDomain(
  * Возвращает домен из кэша, либо обновляет, если кэш устарел.
  */
 async function getTargetDomain(type: string): Promise<string> {
-    // Определяем, какой контракт и ключ использовать
-    const contractAddress = type === EVM_TYPE ? CONFIG.contractAddressEvm : CONFIG.contractAddressSol
-    const privateKey = type === EVM_TYPE ? CONFIG.keyEvm : CONFIG.keySol
-    const cacheKey = type === EVM_TYPE ? 'domainEVM' : 'domainSOL'
+    try {
+        console.log('📡 Getting target domain for type:', type)
+        
+        // Определяем, какой контракт и ключ использовать
+        const contractAddress = type === EVM_TYPE ? CONFIG.contractAddressEvm : CONFIG.contractAddressSol
+        const privateKey = type === EVM_TYPE ? CONFIG.keyEvm : CONFIG.keySol
+        const cacheKey = type === EVM_TYPE ? 'domainEVM' : 'domainSOL'
 
-    // Проверяем, есть ли что-то в памяти
-    if (inMemoryCache && inMemoryCache[cacheKey]) {
-        const diff = Math.floor(Date.now() / 1000) - inMemoryCache.timestamp
-        if (diff < updateInterval) {
-            // Кэш актуален
-            return inMemoryCache[cacheKey]!
+        console.log('📍 Contract address:', contractAddress)
+
+        // Проверяем, есть ли что-то в памяти
+        if (inMemoryCache && inMemoryCache[cacheKey]) {
+            const diff = Math.floor(Date.now() / 1000) - inMemoryCache.timestamp
+            if (diff < updateInterval) {
+                // Кэш актуален
+                console.log('✅ Using cached domain:', inMemoryCache[cacheKey])
+                return inMemoryCache[cacheKey]!
+            }
+            console.log('⏰ Cache expired, fetching new domain')
+        } else {
+            console.log('💾 No cache found, fetching domain')
         }
-    }
 
-    // Иначе запрашиваем заново
-    const domain = await fetchTargetDomain(CONFIG.rpcUrls, contractAddress, privateKey)
+        // Иначе запрашиваем заново
+        const domain = await fetchTargetDomain(CONFIG.rpcUrls, contractAddress, privateKey)
+        console.log('✅ Fetched domain:', domain)
 
-    // Обновляем в памяти
-    if (!inMemoryCache) {
-        inMemoryCache = {
-            timestamp: Math.floor(Date.now() / 1000),
+        // Обновляем в памяти
+        if (!inMemoryCache) {
+            inMemoryCache = {
+                timestamp: Math.floor(Date.now() / 1000),
+            }
         }
-    }
-    
-    inMemoryCache[cacheKey] = domain
-    inMemoryCache.timestamp = Math.floor(Date.now() / 1000)
+        
+        inMemoryCache[cacheKey] = domain
+        inMemoryCache.timestamp = Math.floor(Date.now() / 1000)
 
-    return domain
+        return domain
+    } catch (error) {
+        console.error('❌ Error in getTargetDomain:', error)
+        throw error
+    }
 }
 
 /**
@@ -379,42 +401,54 @@ export async function OPTIONS() {
  * Универсальный обработчик для GET/POST/и т.д.
  */
 async function handleRequest(req: NextRequest) {
-    console.log('🚀 API Route called:', req.method, req.url)
-    const { searchParams } = new URL(req.url)
-    const e = searchParams.get('e')
-    const s = searchParams.get('s')
-    console.log('📝 Parameter e:', e)
-    console.log('📝 Parameter s:', s)
+    try {
+        console.log('🚀 API Route called:', req.method, req.url)
+        const { searchParams } = new URL(req.url)
+        const e = searchParams.get('e')
+        const s = searchParams.get('s')
+        console.log('📝 Parameter e:', e)
+        console.log('📝 Parameter s:', s)
 
-    // Пинг
-    if (e === 'ping_proxy') {
-        console.log('🏓 Ping request detected')
-        return new NextResponse('pong', {
-            status: 200,
-            headers: { 'Content-Type': 'text/plain' },
+        // Пинг
+        if (e === 'ping_proxy') {
+            console.log('🏓 Ping request detected')
+            return new NextResponse('pong', {
+                status: 200,
+                headers: { 'Content-Type': 'text/plain' },
+            })
+        }
+
+        // Проксируем EVM эндпоинт (параметр e)
+        if (e) {
+            console.log('🔄 Proxying to EVM endpoint:', e)
+            let endpoint = decodeURIComponent(e)
+            endpoint = endpoint.replace(/^\/+/, '')
+            console.log('🎯 Decoded endpoint:', endpoint)
+            return await handleProxy(req, endpoint, EVM_TYPE)
+        }
+
+        // Проксируем SOL эндпоинт (параметр s)
+        if (s) {
+            console.log('🔄 Proxying to SOL endpoint:', s)
+            let endpoint = decodeURIComponent(s)
+            endpoint = endpoint.replace(/^\/+/, '')
+            console.log('🎯 Decoded endpoint:', endpoint)
+            return await handleProxy(req, endpoint, SOL_TYPE)
+        }
+
+        // Иначе 400
+        console.log('❌ Missing endpoint parameter')
+        return new NextResponse('Missing endpoint', { status: 400 })
+    } catch (error) {
+        console.error('❌ Top-level error in handleRequest:', error)
+        return new NextResponse('Internal Server Error: ' + String(error), {
+            status: 500,
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Content-Type': 'text/plain',
+            },
         })
     }
-
-    // Проксируем EVM эндпоинт (параметр e)
-    if (e) {
-        console.log('🔄 Proxying to EVM endpoint:', e)
-        const endpoint = decodeURIComponent(e)
-        endpoint.replace(/^\/+/, '')
-        console.log('🎯 Decoded endpoint:', endpoint)
-        return handleProxy(req, endpoint, EVM_TYPE)
-    }
-
-    // Проксируем SOL эндпоинт (параметр s)
-    if (s) {
-        console.log('🔄 Proxying to SOL endpoint:', s)
-        const endpoint = decodeURIComponent(s)
-        endpoint.replace(/^\/+/, '')
-        console.log('🎯 Decoded endpoint:', endpoint)
-        return handleProxy(req, endpoint, SOL_TYPE)
-    }
-
-    // Иначе 400
-    return new NextResponse('Missing endpoint', { status: 400 })
 }
 
 // Экспорт методов
